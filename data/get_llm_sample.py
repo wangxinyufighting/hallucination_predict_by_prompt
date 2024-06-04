@@ -73,17 +73,20 @@ def add_role_gsm8k(batch_list):
 # gpu = 0
 batch_size = 8
 
+model_name = 'vicuna-13b'
+# model_name = 'vicuna-7b'
 # model_name = 'Mistral-7B-Instruct-v0.2'
-model_name = 'vicuna-33b'
+# model_name = 'vicuna-33b'
 
 # model_path = f'/mnt/local/xywang/models/{model_name}'
 model_path = f'/home/wxy/models/{model_name}'
-# device = torch.device("cuda:0,1")
+# device = torch.device("cuda")
 
 model = AutoModelForCausalLM.from_pretrained(model_path, device_map="sequential")
+# model = AutoModelForCausalLM.from_pretrained(model_path)
+
 # model = AutoModelForCausalLM.from_pretrained('lmsys/vicuna-33b-v1.3', device_map="sequential")
-# model.to('cuda')
-# model.cuda('cuda:1,0')
+# model.to(device)
 model = model.to(torch.float16)
 model = model.eval()
 
@@ -106,11 +109,13 @@ tokenizer.pad_token = tokenizer.eos_token
 # file_type = 'test_e_m_h_has_support'
 
 
-data_name = 'gsm8k'
-# file_type = 'train_816_1500'
+# data_name = 'gsm8k'
+# file_type = 'train_0_1500'
+
 data_name = 'hotpot_qa'
-# file_type = 'test_e_m_h_has_support'
-file_type = 'test_e_m_h_has_support_336'
+file_type = 'train_medium_has_support_1500'
+# file_type = 'test_e_m_h_has_support_336'
+# file_type = 'train_medium_has_support_1500'
 
 if data_name == 'gsm8k':
     shot = '0shot'
