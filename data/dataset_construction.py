@@ -84,7 +84,7 @@ def construct_prompt(data_name, question, shot_num):
 
 def train_dataset_construction(model_name, device, data_name):
     results = []
-    path = f'{model_name}'
+    path = f'/mnt/local/wxy/models/{model_name}'
     model = AutoModelForCausalLM.from_pretrained(path, torch_dtype = torch.float16).to(device)
     tokenizer = AutoTokenizer.from_pretrained(path)
 
