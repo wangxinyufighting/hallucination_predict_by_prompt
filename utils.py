@@ -30,7 +30,12 @@ from torch.utils.data import DataLoader, TensorDataset
 import time
 from sklearn.neural_network import MLPClassifier
 
-
+MMLU_PRO_PROMPT = """
+Reason step by step about the correct answer based on the question and options provided. 
+After your reasoning, you will select the most correct answer(e.g., A, B, C, D, F, G, H, I, J) and write it in \\boxed{}. 
+For example: \\boxed{A}
+Let's think step by step!
+"""
 
 # --- 1. 定义核心功能函数 ---
 
@@ -130,13 +135,19 @@ def get_and_save_representations(
 
     return final_data
 
-def get_prompts(data_name):
+def get_prompts_and_answer_extractor(data_name):
     prompt = None
-    
+    answer_extractor = None
+
     if data_name.lower() == 'gsm8k':
         prompt = "Let's think step by step and output the final answer in \\boxed{}."
+        answer_extractor = gsm8k_answer_extractor
 
-    return prompt
+    elif data_name.lower() == 'mmlu_pro':
+        prompt = MMLU_PRO_PROMPT
+        answer_extractor = mmlu_pro_answer_extractor
+
+    return prompt, answer_extractor
 
 def get_messages(prompt, tokenizer):
     # 构建对话格式
@@ -153,6 +164,26 @@ def get_messages(prompt, tokenizer):
     )
 
     return text
+
+def mmlu_pro_answer_extractor(solution_str):
+    solution = re.search("#### [a-zA-Z](?=[^a-zA-Z])", solution_str)
+
+    if solution is not None:
+        final_solution = solution.group(0)
+        final_solution = final_solution.split("#### ")[1].replace(",", "")
+    else:
+        if '####' in solution_str:
+            solution_str = solution_str.split('####')[-1]
+        solution = re.findall("[a-zA-Z](?=[^a-zA-Z])", solution_str)
+        if solution is not None and len(solution) > 0:
+            final_solution = solution[-1]
+        else:
+            final_solution = ""
+
+    while final_solution and len(final_solution) > 1:
+        final_solution = final_solution[:-1]
+
+    return final_solution
 
 import re
 def gsm8k_answer_extractor(solution_str):
@@ -240,7 +271,8 @@ def get_labels_vllm(model_name, data_name, dataset_path, num_samples=10, tempera
             data = json.loads(line.strip())
             question = data['question']
             # 组合 prompt，与原逻辑保持一致
-            prompt = question + '\n' + get_prompts(data_name)
+            prompt, _ = get_prompts_and_answer_extractor(data_name)
+            prompt = question + '\n' + prompt
             prompts.append(prompt)
             original_data.append(data)
 
@@ -304,7 +336,8 @@ def get_labels(model_name, data_name, dataset_path, num_samples=10, temperature=
     model = AutoModelForCausalLM.from_pretrained(model_path, device_map='auto', torch_dtype=torch.float16)
     tokenizer = AutoTokenizer.from_pretrained(model_path)
 
-    prompt = get_prompts(data_name) 
+    prompt, answer_extractor = get_prompts_and_answer_extractor(data_name)
+
     data_responses_output_path = f'./datasets/{data_name}/responses'
     if not os.path.exists(data_responses_output_path):
         os.makedirs(data_responses_output_path)
@@ -316,11 +349,11 @@ def get_labels(model_name, data_name, dataset_path, num_samples=10, temperature=
         for line in f.readlines():
             data = json.loads(line.strip())
             question = data['question']
-            prompt = question + '\n' + get_prompts(data_name)
+            prompt = question + '\n' + prompt
             greedy_response = _generate(model=model, tokenizer=tokenizer, prompt=prompt, num_samples=1, temperature=0, max_new_tokens=max_new_tokens)[0]
             sample_responses = _generate(model=model, tokenizer=tokenizer, prompt=prompt, num_samples=num_samples, temperature=temperature, max_new_tokens=max_new_tokens)
-            greedy_answer = gsm8k_answer_extractor(greedy_response)
-            sample_answers = [gsm8k_answer_extractor(ans) for ans in sample_responses]
+            greedy_answer = answer_extractor(greedy_response)
+            sample_answers = [answer_extractor(ans) for ans in sample_responses]
 
             new_data = {}
             new_data['question'] = question
