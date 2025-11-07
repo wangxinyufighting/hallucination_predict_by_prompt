@@ -165,23 +165,71 @@ def get_messages(prompt, tokenizer):
 
     return text
 
-def mmlu_pro_answer_extractor(solution_str):
-    solution = re.search("#### [a-zA-Z](?=[^a-zA-Z])", solution_str)
+def mmlu_pro_answer_extractor(solution_str, prompt=""):
+    if '\boxed' in solution_str:
+        solution_str = solution_str.replace('\\boxed', 'boxed')
+    if 'Boxed' in solution_str:
+        solution_str = solution_str.replace('Boxed', 'boxed')
 
+    solution = re.search("(?<=boxed{)[a-zA-Z]", solution_str)
+
+    final_solution = ""
     if solution is not None:
         final_solution = solution.group(0)
-        final_solution = final_solution.split("#### ")[1].replace(",", "")
     else:
-        if '####' in solution_str:
-            solution_str = solution_str.split('####')[-1]
-        solution = re.findall("[a-zA-Z](?=[^a-zA-Z])", solution_str)
-        if solution is not None and len(solution) > 0:
-            final_solution = solution[-1]
+        if 'answer is:\n\n' in solution_str:
+            # print(solution_str)
+            solution = re.search("(?<=answer is:\n\n)[a-zA-Z]", solution_str)
+            if solution is not None:
+                final_solution = solution.group(0)
+        elif 'answer is: ' in solution_str:
+            solution = re.search("(?<=answer is: )\w", solution_str)
+            if solution is not None:
+                final_solution = solution.group(0)
+        elif 'answer is ' in solution_str:
+            solution = re.search("(?<=answer is )\w", solution_str)
+            if solution is not None:
+                final_solution = solution.group(0)
+        elif 'Answer: ' in solution_str:
+            solution = re.search("(?<=Answer\: )\w", solution_str)
+            if solution is not None:
+                final_solution = solution.group(0)
+        elif 'answer: ' in solution_str:
+            solution = re.search("(?<=answer: )\w", solution_str)
+            if solution is not None:
+                final_solution = solution.group(0)
+        elif 'Answer\n' in solution_str:
+            solution = re.search("(?<=Final Answer\n)[a-zA-Z]", solution_str)
+            if solution is not None:
+                final_solution = solution.group(0)
+        elif 'answer is:\n' in solution_str:
+            solution = re.search("(?<=answer is:\n)[a-zA-Z]", solution_str)
+            if solution is not None:
+                final_solution = solution.group(0)
+        elif 'Final Answer**: ' in solution_str:
+            solution = re.search("(?<=Final Answer\*\*: )\w", solution_str)
+            if solution is not None:
+                final_solution = solution.group(0)
+        elif solution_str in prompt:
+            final_solution = solution_str
+        elif 'which is option ' in solution_str:
+            solution = re.search("(?<=which is option )[a-zA-Z]", solution_str)
+            if solution is not None:
+                final_solution = solution.group(0)
+        elif 'boxed: ' in solution_str:
+            solution = re.search("(?<=boxed: )[a-zA-Z]", solution_str)
+            if solution is not None:
+                final_solution = solution.group(0)
+        elif 'is **' in solution_str:
+            solution = re.search("(?<=is \*\*)[a-zA-Z]", solution_str)
+            if solution is not None:
+                final_solution = solution.group(0)
         else:
-            final_solution = ""
-
-    while final_solution and len(final_solution) > 1:
-        final_solution = final_solution[:-1]
+            solution = re.search("^[a-zA-Z]\.", solution_str)
+            if solution is not None:
+                final_solution = solution.group(0)[0]
+            else:
+                final_solution = ""
 
     return final_solution
 
