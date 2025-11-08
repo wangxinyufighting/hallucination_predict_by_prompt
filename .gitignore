@@ -1,2 +1,8 @@
 baselines/
 data/__pycache__/
+data/
+datasets/
+feature/
+*.npy
+*.npz
+*.arrow

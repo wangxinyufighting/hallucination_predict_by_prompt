@@ -7,7 +7,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_name", type=str, default="Qwen2.5-3B-Instruct", help="Model name.")
     parser.add_argument("--data_name", type=str, default='gsm8k', help="dataset name, like 'gsm8k'")
-    parser.add_argument("--train_dataset_path", type=str, default='./datasets/gsm8k/train.jsonl', help="Path to the dataset file.")
+    parser.add_argument("--train_dataset_path", type=str, default='./datasets/gsm8k/train_30.jsonl', help="Path to the dataset file.")
     parser.add_argument("--test_dataset_path", type=str, default='./datasets/gsm8k/test.jsonl', help="Path to the dataset file.")
     parser.add_argument("--max_new_tokens", type=int, default=512, help="Max new tokens for sampling.")
     parser.add_argument("--temperature", type=float, default=1.0, help="Sampling temperature.")
@@ -16,78 +16,78 @@ def parse_args() -> argparse.Namespace:
 
 if __name__ == '__main__':
     args = parse_args()
-    #save_hidden_states(args.model_name, args.data_name, args.train_dataset_path)
-    # 训练集
-    # generate_and_save_features_vllm(
-    #     args.model_name,
-    #     args.data_name,
-    #     args.train_dataset_path,
-    #     split="train"
-    # )
+    save_hidden_states(args.model_name, args.data_name, args.train_dataset_path)
+    # # 训练集
+    # # generate_and_save_features_vllm(
+    # #     args.model_name,
+    # #     args.data_name,
+    # #     args.train_dataset_path,
+    # #     split="train"
+    # # )
 
-    # # # 测试集
-    # generate_and_save_features_vllm(
-    #     args.model_name,
-    #     args.data_name,
-    #     args.test_dataset_path,
-    #     split="test"
-    # )
+    # # # # 测试集
+    # # generate_and_save_features_vllm(
+    # #     args.model_name,
+    # #     args.data_name,
+    # #     args.test_dataset_path,
+    # #     split="test"
+    # # )
     
-    # --- 加载训练集特征 ---
-    heads_file = f'./feature/{args.data_name}_{args.model_name}_train_heads.npy'
-    layer_file = f'./feature/{args.data_name}_{args.model_name}_train_layerst.npy'
-    labels_file = f'./feature/{args.data_name}_{args.model_name}_train_labels.npy'
+    # # --- 加载训练集特征 ---
+    # heads_file = f'./feature/{args.data_name}_{args.model_name}_train_heads.npy'
+    # layer_file = f'./feature/{args.data_name}_{args.model_name}_train_layerst.npy'
+    # labels_file = f'./feature/{args.data_name}_{args.model_name}_train_labels.npy'
 
-    head_activations_train = np.load(heads_file)
-    labels_train = np.load(labels_file)
+    # head_activations_train = np.load(heads_file)
+    # labels_train = np.load(labels_file)
 
-    # --- 加载测试集特征 ---
-    heads_file_test = f'./feature/{args.data_name}_{args.model_name}_test_baseline_heads.npy'
-    layer_file_test = f'./feature/{args.data_name}_{args.model_name}_test_baseline_layers.npy'
-    labels_file_test = f'./feature/{args.data_name}_{args.model_name}_test_baseline_labels.npy'
+    # # --- 加载测试集特征 ---
+    # heads_file_test = f'./feature/{args.data_name}_{args.model_name}_test_baseline_heads.npy'
+    # layer_file_test = f'./feature/{args.data_name}_{args.model_name}_test_baseline_layers.npy'
+    # labels_file_test = f'./feature/{args.data_name}_{args.model_name}_test_baseline_labels.npy'
 
-    head_activations_test = np.load(heads_file_test)
-    labels_test = np.load(labels_file_test)
+    # head_activations_test = np.load(heads_file_test)
+    # labels_test = np.load(labels_file_test)
 
-    # --- 取第一 token 的表示 ---
-    head_wise_activations_train = head_activations_train[:, :, 0, :, :]
-    head_wise_activations_test = head_activations_test[:, :, 0, :, :]
+    # # --- 取第一 token 的表示 ---
+    # head_wise_activations_train = head_activations_train[:, :, 0, :, :]
+    # head_wise_activations_test = head_activations_test[:, :, 0, :, :]
 
-    # heads_file = '/home/zcy/hallucination_predict_by_prompt/feature/gsm8k_Qwen2.5-3B-Instruct_heads.npy'
-    # layer_file = '/home/zcy/hallucination_predict_by_prompt/feature/gsm8k_Qwen2.5-3B-Instruct_layers.npy'
-    # labels_file = '/home/zcy/hallucination_predict_by_prompt/feature/gsm8k_Qwen2.5-3B-Instruct_labels.npy'
+    # # heads_file = '/home/zcy/hallucination_predict_by_prompt/feature/gsm8k_Qwen2.5-3B-Instruct_heads.npy'
+    # # layer_file = '/home/zcy/hallucination_predict_by_prompt/feature/gsm8k_Qwen2.5-3B-Instruct_layers.npy'
+    # # labels_file = '/home/zcy/hallucination_predict_by_prompt/feature/gsm8k_Qwen2.5-3B-Instruct_labels.npy'
 
-    # head_activations = np.load(heads_file)
-    # # layer_wise_activations = np.load(layer_file)
-    # labels = np.load(labels_file)
+    # # head_activations = np.load(heads_file)
+    # # # layer_wise_activations = np.load(layer_file)
+    # # labels = np.load(labels_file)
 
-    # head_activations = head_activations[:, :, 0, :, :]
+    # # head_activations = head_activations[:, :, 0, :, :]
 
-    # head_wise_activations_train = head_activations[:20, ...]
-    # labels_train = labels[:20]
-    # head_wise_activations_test = head_activations[10:, ...]
-    # labels_test = labels[10:]
+    # # head_wise_activations_train = head_activations[:20, ...]
+    # # labels_train = labels[:20]
+    # # head_wise_activations_test = head_activations[10:, ...]
+    # # labels_test = labels[10:]
 
     
-    # print("标签取值：", np.unique(labels))
+    # # print("标签取值：", np.unique(labels))
+    # # print("训练集标签取值：", np.unique(labels_train))
+    # # print("测试集标签取值：", np.unique(labels_test))
+
+    # # print(head_wise_activations_train.shape)
     # print("训练集标签取值：", np.unique(labels_train))
     # print("测试集标签取值：", np.unique(labels_test))
+    # print("head_activations_train shape:", head_activations_train.shape)
+    # print("head_activations_test shape:", head_activations_test.shape)
+    # layer_num = head_wise_activations_train.shape[1]
+    # head_num = head_wise_activations_train.shape[2]
 
-    # print(head_wise_activations_train.shape)
-    print("训练集标签取值：", np.unique(labels_train))
-    print("测试集标签取值：", np.unique(labels_test))
-    print("head_activations_train shape:", head_activations_train.shape)
-    print("head_activations_test shape:", head_activations_test.shape)
-    layer_num = head_wise_activations_train.shape[1]
-    head_num = head_wise_activations_train.shape[2]
+    # print('layer_num:', layer_num)
+    # print('head_num:', head_num)
 
-    print('layer_num:', layer_num)
-    print('head_num:', head_num)
+    # m_auc, m_auroc, d_clf = probe(layer_num, head_num, head_wise_activations_train, labels_train, head_wise_activations_test, labels_test, max_iter=1000)
 
-    m_auc, m_auroc, d_clf = probe(layer_num, head_num, head_wise_activations_train, labels_train, head_wise_activations_test, labels_test, max_iter=1000)
-
-    print(m_auc)
-    print("m_auc:", m_auc.max())
+    # print(m_auc)
+    # print("m_auc:", m_auc.max())
 
 ### baseline
 # if __name__ == '__main__':
