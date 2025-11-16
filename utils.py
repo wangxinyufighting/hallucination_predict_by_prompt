@@ -35,7 +35,16 @@ from sklearn.metrics import (
 )
 from sklearn.model_selection import GridSearchCV
 # 指定可见 GPU
-os.environ["CUDA_VISIBLE_DEVICES"] = "5"
+os.environ["CUDA_VISIBLE_DEVICES"] = "4,5"
+
+
+MMLU_PRO_PROMPT = """
+Reason step by step about the correct answer based on the question and options provided. 
+After your reasoning, you will select the most correct answer(e.g., A, B, C, D, F, G, H, I, J) and write it in \\boxed{}. 
+For example: \\boxed{A}
+Let's think step by step!
+"""
+
 # --- 1. 定义核心功能函数 ---
 
 def get_and_save_representations(
@@ -146,6 +155,20 @@ def get_prompts(data_name):
 
     return prompt
 
+def get_prompts_and_answer_extractor(data_name):
+    prompt = None
+    answer_extractor = None
+
+    if data_name.lower() == 'gsm8k':
+        prompt = "Let's think step by step and output the final answer in \\boxed{}."
+        answer_extractor = gsm8k_answer_extractor
+
+    elif data_name.lower() == 'mmlupro':
+        prompt = MMLU_PRO_PROMPT
+        answer_extractor = mmlu_pro_answer_extractor
+
+    return prompt, answer_extractor
+
 def get_messages(prompt, tokenizer):
     # 构建对话格式
     messages = [
@@ -162,7 +185,75 @@ def get_messages(prompt, tokenizer):
 
     return text
 
-import re
+def mmlu_pro_answer_extractor(solution_str, prompt=""):
+    if '\boxed' in solution_str:
+        solution_str = solution_str.replace('\\boxed', 'boxed')
+    if 'Boxed' in solution_str:
+        solution_str = solution_str.replace('Boxed', 'boxed')
+
+    solution = re.search("(?<=boxed{)[a-zA-Z]", solution_str)
+
+    final_solution = ""
+    if solution is not None:
+        final_solution = solution.group(0)
+    else:
+        if 'answer is:\n\n' in solution_str:
+            # print(solution_str)
+            solution = re.search("(?<=answer is:\n\n)[a-zA-Z]", solution_str)
+            if solution is not None:
+                final_solution = solution.group(0)
+        elif 'answer is: ' in solution_str:
+            solution = re.search("(?<=answer is: )\w", solution_str)
+            if solution is not None:
+                final_solution = solution.group(0)
+        elif 'answer is ' in solution_str:
+            solution = re.search("(?<=answer is )\w", solution_str)
+            if solution is not None:
+                final_solution = solution.group(0)
+        elif 'Answer: ' in solution_str:
+            solution = re.search("(?<=Answer\: )\w", solution_str)
+            if solution is not None:
+                final_solution = solution.group(0)
+        elif 'answer: ' in solution_str:
+            solution = re.search("(?<=answer: )\w", solution_str)
+            if solution is not None:
+                final_solution = solution.group(0)
+        elif 'Answer\n' in solution_str:
+            solution = re.search("(?<=Final Answer\n)[a-zA-Z]", solution_str)
+            if solution is not None:
+                final_solution = solution.group(0)
+        elif 'answer is:\n' in solution_str:
+            solution = re.search("(?<=answer is:\n)[a-zA-Z]", solution_str)
+            if solution is not None:
+                final_solution = solution.group(0)
+        elif 'Final Answer**: ' in solution_str:
+            solution = re.search("(?<=Final Answer\*\*: )\w", solution_str)
+            if solution is not None:
+                final_solution = solution.group(0)
+        elif solution_str in prompt:
+            final_solution = solution_str
+        elif 'which is option ' in solution_str:
+            solution = re.search("(?<=which is option )[a-zA-Z]", solution_str)
+            if solution is not None:
+                final_solution = solution.group(0)
+        elif 'boxed: ' in solution_str:
+            solution = re.search("(?<=boxed: )[a-zA-Z]", solution_str)
+            if solution is not None:
+                final_solution = solution.group(0)
+        elif 'is **' in solution_str:
+            solution = re.search("(?<=is \*\*)[a-zA-Z]", solution_str)
+            if solution is not None:
+                final_solution = solution.group(0)
+        else:
+            solution = re.search("^[a-zA-Z]\.", solution_str)
+            if solution is not None:
+                final_solution = solution.group(0)[0]
+            else:
+                final_solution = ""
+
+    return final_solution
+    
+
 def gsm8k_answer_extractor(solution_str):
     solution = re.search("(?<=boxed{)-?\d+(?:[.,]\d+)*(?=\})", solution_str)
 
@@ -181,11 +272,23 @@ def get_label(greedy_answer:str, sample_answers:list[str]):
         return False
 
     majority_answer = Counter(sample_answers).most_common(1)[0][0] 
+    def is_number(x):
+        try:
+            float(x)
+            return True
+        except ValueError:
+            return False
+    # --- 分支处理 ---
+    if is_number(greedy_answer) and is_number(majority_answer):
+        # 数字型答案
+        return float(greedy_answer) == float(majority_answer)
+    else:
+        # 非数字型（如 A/B/C/D）
+        return greedy_answer.strip().upper() == majority_answer.strip().upper()
+    #return float(greedy_answer) == float(majority_answer)
 
-    return float(greedy_answer) == float(majority_answer)
 
-
-def _generate(model, tokenizer, prompt, max_new_tokens=512, num_samples=1, temperature=0.7):
+def _generate(model, tokenizer, prompt, max_new_tokens=2048, num_samples=1, temperature=0.7):
     text = get_messages(prompt, tokenizer)
     # 编码输入 - 复制成batch
     inputs = tokenizer(text, return_tensors="pt").to(model.device)
@@ -213,7 +316,7 @@ def _generate(model, tokenizer, prompt, max_new_tokens=512, num_samples=1, tempe
 
     return responses
 
-def get_labels_vllm(model_name, data_name, dataset_path, num_samples=10, temperature=0.7,max_new_tokens=512):
+def get_labels_vllm(model_name, data_name, dataset_path, num_samples=10, temperature=0.7,max_new_tokens=2048):
     """
     使用 VLLM 框架为数据集生成标签。
 
@@ -248,7 +351,8 @@ def get_labels_vllm(model_name, data_name, dataset_path, num_samples=10, tempera
             data = json.loads(line.strip())
             question = data['question']
             # 组合 prompt，与原逻辑保持一致
-            prompt = question + '\n' + get_prompts(data_name)
+            prompt, answer_extractor = get_prompts_and_answer_extractor(data_name)
+            prompt = question + '\n' + prompt
             prompts.append(prompt)
             original_data.append(data)
 
@@ -307,12 +411,12 @@ def get_labels_vllm(model_name, data_name, dataset_path, num_samples=10, tempera
     print(f"All responses have been saved to {data_responses_output_file}")
     return data_responses_output_file
 
-def get_labels(model_name, data_name, dataset_path, num_samples=10, temperature=0.7, max_new_tokens=512):
+def get_labels(model_name, data_name, dataset_path, num_samples=10, temperature=0.7, max_new_tokens=2048):
     model_path = f'/mnt/local/wxy/models/{model_name}'
     model = AutoModelForCausalLM.from_pretrained(model_path, device_map='auto', torch_dtype=torch.float16)
     tokenizer = AutoTokenizer.from_pretrained(model_path)
 
-    prompt = get_prompts(data_name) 
+    prompt, answer_extractor = get_prompts_and_answer_extractor(data_name) 
     data_responses_output_path = f'./datasets/{data_name}/responses'
     if not os.path.exists(data_responses_output_path):
         os.makedirs(data_responses_output_path)
@@ -324,11 +428,11 @@ def get_labels(model_name, data_name, dataset_path, num_samples=10, temperature=
         for line in f.readlines():
             data = json.loads(line.strip())
             question = data['question']
-            prompt = question + '\n' + get_prompts(data_name)
+            prompt = question + '\n' + prompt
             greedy_response = _generate(model=model, tokenizer=tokenizer, prompt=prompt, num_samples=1, temperature=0, max_new_tokens=max_new_tokens)[0]
             sample_responses = _generate(model=model, tokenizer=tokenizer, prompt=prompt, num_samples=num_samples, temperature=temperature, max_new_tokens=max_new_tokens)
-            greedy_answer = gsm8k_answer_extractor(greedy_response)
-            sample_answers = [gsm8k_answer_extractor(ans) for ans in sample_responses]
+            greedy_answer = answer_extractor(greedy_response)
+            sample_answers = [answer_extractor(ans) for ans in sample_responses]
 
             new_data = {}
             new_data['question'] = question
@@ -343,7 +447,7 @@ def get_labels(model_name, data_name, dataset_path, num_samples=10, temperature=
 
     return data_responses_output_file
 
-def get_labels_and_hidden_vllm(model_name, data_name, dataset_path, num_samples=10, temperature=0.7, max_new_tokens=512):
+def get_labels_and_hidden_vllm(model_name, data_name, dataset_path, num_samples=10, temperature=0.7, max_new_tokens=2048):
     """
     完整流程：
         1. 贪心生成 1 个响应
@@ -374,7 +478,8 @@ def get_labels_and_hidden_vllm(model_name, data_name, dataset_path, num_samples=
         for line in f:
             data = json.loads(line.strip())
             question = data['question']
-            prompt = question + '\n' + get_prompts(data_name)
+            prompt, answer_extractor = get_prompts_and_answer_extractor(data_name)
+            prompt = question + '\n' + prompt
             prompts.append(prompt)
             original_data.append(data)
     
@@ -414,8 +519,8 @@ def get_labels_and_hidden_vllm(model_name, data_name, dataset_path, num_samples=
             sample_resps = [o.text.strip() for o in sample_outputs[i].outputs]
 
             # --- 提取答案 ---
-            greedy_answer = gsm8k_answer_extractor(greedy_resp)
-            sample_answers = [gsm8k_answer_extractor(ans) for ans in sample_resps]
+            greedy_answer = answer_extractor(greedy_resp)
+            sample_answers = [answer_extractor(ans) for ans in sample_resps]
 
             # --- 多数投票生成 label ---
             label = get_label(greedy_answer, sample_answers)
@@ -614,11 +719,14 @@ def extract_gt_answer(answer_text: str) -> str:
     match = re.search(r'####\s*([\d\.\-]+)', answer_text)
     if match:
         return match.group(1).strip()
-    else:
-        return ""  # 没找到返回空字符串
+    # 匹配单个字母选项（A-J）
+    match = re.match(r'^\s*([A-Ja-j])\s*$', answer_text)
+    if match:
+        return match.group(1).strip().upper()
+    return ""  # 没找到返回空字符串
     
 def generate_and_save_features(model_name, data_name, dataset_path, split="train",
-                                  num_samples=10, temperature=0.7, max_new_tokens=512):
+                                  num_samples=10, temperature=0.7, max_new_tokens=2048):
     """
     统一处理 train/test 数据（不依赖 VLLM）：
       - train: 贪心 + 多样本采样 → 多数投票标签
@@ -658,7 +766,8 @@ def generate_and_save_features(model_name, data_name, dataset_path, split="train
         for line in f:
             data = json.loads(line.strip())
             question = data['question']
-            prompt = question + '\n' + get_prompts(data_name)
+            prompt, answer_extractor = get_prompts_and_answer_extractor(data_name)
+            prompt = question + '\n' + prompt
             prompts.append(prompt)
             original_data.append(data)
 
@@ -697,8 +806,8 @@ def generate_and_save_features(model_name, data_name, dataset_path, split="train
         prompt = prompts[i]
         result_data = original_data[i]
 
-        greedy_answer = gsm8k_answer_extractor(greedy_resp)
-        sample_answers = [gsm8k_answer_extractor(ans) for ans in sample_resps]
+        greedy_answer = answer_extractor(greedy_resp)
+        sample_answers = [answer_extractor(ans) for ans in sample_resps]
 
         # --- label 逻辑 ---
         if split == "train":
@@ -707,9 +816,9 @@ def generate_and_save_features(model_name, data_name, dataset_path, split="train
             gt_answer_raw = result_data['answer']
             gt_answer = extract_gt_answer(gt_answer_raw)
             try:
-                label = (float(greedy_answer) != float(gt_answer))
+                label = (float(greedy_answer) == float(gt_answer))
             except:
-                label = (greedy_answer.strip() != gt_answer.strip())
+                label = (greedy_answer.strip() == gt_answer.strip())
             result_data['gt_answer'] = gt_answer
 
         # --- 获取 hidden states / attention ---
@@ -746,7 +855,7 @@ def generate_and_save_features(model_name, data_name, dataset_path, split="train
     return data_responses_output_file
 
 def generate_and_save_features_vllm(model_name, data_name, dataset_path, split="train",
-                               num_samples=10, temperature=0.7, max_new_tokens=512):
+                               num_samples=10, temperature=0.7, max_new_tokens=2048):
     """
     统一处理 train/test 数据：
       - train: 贪心 + 多样本采样 → 多数投票标签
@@ -783,7 +892,8 @@ def generate_and_save_features_vllm(model_name, data_name, dataset_path, split="
         for line in f:
             data = json.loads(line.strip())
             question = data['question']
-            prompt = question + '\n' + get_prompts(data_name)
+            prompt, answer_extractor = get_prompts_and_answer_extractor(data_name)
+            prompt = question + '\n' + prompt
             prompts.append(prompt)
             original_data.append(data)
 
@@ -820,9 +930,8 @@ def generate_and_save_features_vllm(model_name, data_name, dataset_path, split="
             greedy_resp = greedy_outputs[i].outputs[0].text.strip()
             sample_resps = [o.text.strip() for o in sample_outputs[i].outputs]
 
-            greedy_answer = gsm8k_answer_extractor(greedy_resp)
-            sample_answers = [gsm8k_answer_extractor(ans) for ans in sample_resps]
-
+            greedy_answer = answer_extractor(greedy_resp)
+            sample_answers = [answer_extractor(ans) for ans in sample_resps]
             # --- label 逻辑 ---
             if split == "train":
                 # 多数投票
@@ -831,14 +940,23 @@ def generate_and_save_features_vllm(model_name, data_name, dataset_path, split="
                 # 测试集：对比标准答案
                 gt_answer_raw = result_data['answer']
                 gt_answer = extract_gt_answer(gt_answer_raw)
+                def is_number(x):
+                    try:
+                        float(x)
+                        return True
+                    except ValueError:
+                        return False
+                # --- 分支处理 ---
+                if is_number(greedy_answer) and is_number(gt_answer):
+                    # 数字型答案
+                    label = float(greedy_answer) == float(gt_answer)
+                else:
+                    # 非数字型（如 A/B/C/D）
+                    label = greedy_answer.strip().upper() == gt_answer.strip().upper()              
                 # try:
-                #     label = (float(greedy_answer) != float(gt_answer))
+                #     label = (float(greedy_answer) == float(gt_answer))
                 # except:
-                #     label = (greedy_answer.strip() != gt_answer.strip())
-                try:
-                    label = (float(greedy_answer) == float(gt_answer))
-                except:
-                    label = (greedy_answer.strip() == gt_answer.strip())
+                #     label = (greedy_answer.strip() == gt_answer.strip())
                 result_data['gt_answer'] = gt_answer
 
             # --- 获取 hidden states ---
@@ -874,7 +992,7 @@ def generate_and_save_features_vllm(model_name, data_name, dataset_path, split="
 
 
 
-def generate_and_save_features_vllm_baseline(model_name, data_name, dataset_path, split="train", max_new_tokens=512):
+def generate_and_save_features_vllm_baseline(model_name, data_name, dataset_path, split="train", max_new_tokens=2048):
     """
     baseline 版本：
       - train/test: 都是 仅贪心生成 → 与标准答案比对标签
@@ -907,7 +1025,8 @@ def generate_and_save_features_vllm_baseline(model_name, data_name, dataset_path
         for line in f:
             data = json.loads(line.strip())
             question = data['question']
-            prompt = question + '\n' + get_prompts(data_name)
+            prompt,answer_extractor = get_prompts_and_answer_extractor(data_name)
+            prompt = question + '\n' + prompt
             prompts.append(prompt)
             original_data.append(data)
 
@@ -938,19 +1057,28 @@ def generate_and_save_features_vllm_baseline(model_name, data_name, dataset_path
             result_data = original_data[i]
 
             greedy_resp = greedy_outputs[i].outputs[0].text.strip()
-            greedy_answer = gsm8k_answer_extractor(greedy_resp)
+            greedy_answer = answer_extractor(greedy_resp)
 
             # --- 提取标准答案并生成布尔标签 ---
             gt_answer_raw = result_data['answer']
             gt_answer = extract_gt_answer(gt_answer_raw)
+            def is_number(x):
+                try:
+                    float(x)
+                    return True
+                except ValueError:
+                    return False
+            # --- 分支处理 ---
+            if is_number(greedy_answer) and is_number(gt_answer):
+                # 数字型答案
+                label = float(greedy_answer) == float(gt_answer)
+            else:
+                # 非数字型（如 A/B/C/D）
+                label = greedy_answer.strip().upper() == gt_answer.strip().upper()   
             # try:
-            #     label = (float(greedy_answer) != float(gt_answer))
+            #     label = (float(greedy_answer) == float(gt_answer))
             # except:
-            #     label = (greedy_answer.strip() != gt_answer.strip())
-            try:
-                label = (float(greedy_answer) == float(gt_answer))
-            except:
-                label = (greedy_answer.strip() == gt_answer.strip())
+            #     label = (greedy_answer.strip() == gt_answer.strip())
             result_data['gt_answer'] = gt_answer
 
             # --- 获取 hidden states ---
