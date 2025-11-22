@@ -14,32 +14,32 @@ def parse_args() -> argparse.Namespace:
 
 if __name__ == '__main__':
     args = parse_args()
-    save_hidden_states(args.model_name, args.data_name, args.dataset_path)
+    save_hidden_states(args)
 
-    heads_file = '/mnt/local2/wxy/hallucination_predict_by_prompt/feature/gsm8k_Qwen2.5-3B-Instruct_heads.npy'
-    layer_file = '/mnt/local2/wxy/hallucination_predict_by_prompt/feature/gsm8k_Qwen2.5-3B-Instruct_layers.npy'
-    labels_file = '/mnt/local2/wxy/hallucination_predict_by_prompt/feature/gsm8k_Qwen2.5-3B-Instruct_labels.npy'
+    # heads_file = '/mnt/local2/wxy/hallucination_predict_by_prompt/feature/gsm8k_Qwen2.5-3B-Instruct_heads.npy'
+    # layer_file = '/mnt/local2/wxy/hallucination_predict_by_prompt/feature/gsm8k_Qwen2.5-3B-Instruct_layers.npy'
+    # labels_file = '/mnt/local2/wxy/hallucination_predict_by_prompt/feature/gsm8k_Qwen2.5-3B-Instruct_labels.npy'
 
-    head_activations = np.load(heads_file)
-    # layer_wise_activations = np.load(layer_file)
-    labels = np.load(labels_file)
+    # head_activations = np.load(heads_file)
+    # # layer_wise_activations = np.load(layer_file)
+    # labels = np.load(labels_file)
 
-    head_activations = head_activations[:, :, 0, :, :]
+    # head_activations = head_activations[:, :, 0, :, :]
 
-    head_wise_activations_train = head_activations[:20, ...]
-    labels_train = labels[:20]
-    head_wise_activations_test = head_activations[10:, ...]
-    labels_test = labels[10:]
+    # head_wise_activations_train = head_activations[:20, ...]
+    # labels_train = labels[:20]
+    # head_wise_activations_test = head_activations[10:, ...]
+    # labels_test = labels[10:]
 
-    print(head_wise_activations_train.shape)
+    # print(head_wise_activations_train.shape)
 
-    layer_num = head_wise_activations_train.shape[1]
-    head_num = head_wise_activations_train.shape[2]
+    # layer_num = head_wise_activations_train.shape[1]
+    # head_num = head_wise_activations_train.shape[2]
 
-    print('layer_num:', layer_num)
-    print('head_num:', head_num)
+    # print('layer_num:', layer_num)
+    # print('head_num:', head_num)
 
-    m_auc, m_auroc, d_clf = probe(layer_num, head_num, head_wise_activations_train, labels_train, head_wise_activations_test, labels_test, max_iter=5)
+    # m_auc, m_auroc, d_clf = probe(layer_num, head_num, head_wise_activations_train, labels_train, head_wise_activations_test, labels_test, max_iter=5)
 
-    print(m_auc)
-    print("m_auc:", m_auc.max())
+    # print(m_auc)
+    # print("m_auc:", m_auc.max())

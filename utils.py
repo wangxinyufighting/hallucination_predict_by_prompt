@@ -118,6 +118,7 @@ def get_and_save_representations(
 
     all_layer_hidden_states = []
     for layer_idx, layer_hidden_state in layer_hidden_states.items():
+        print(layer_hidden_state.shape)
         all_layer_hidden_states.append(layer_hidden_state[:, -1, :])
     all_layer_hidden_states = np.array(all_layer_hidden_states)  # (Layers, Tokens, Hidden_Size)
     all_layer_hidden_states = np.array(all_layer_hidden_states)
@@ -130,13 +131,33 @@ def get_and_save_representations(
 
     return final_data
 
-def get_prompts(data_name):
+def get_prompts(data_name, data_case):
     prompt = None
     
     if data_name.lower() == 'gsm8k':
+        question = data_case['question']
         prompt = "Let's think step by step and output the final answer in \\boxed{}."
+        prompt = f'{question}\n{prompt}'
+    if 'mmlu' in data_name.lower():
+        question = data_case['question']
+        options = []
+        for index, option in enumerate(data_case['options']):
+            options.append(chr(ord('A') + index)+'. '+option)
+        options = '\n'.join(options) 
+        prompt = """
+            Please Reason about the correct answer based on the question and options provided. 
+            After your reasoning, you will select the most correct OPTION(A, B, C, D, F, G, H, I, J) and write the OPTION in \\boxed{}. 
+            For example: \\boxed{A}
+            """
+        prompt = f'Question:\n{question}\nOptions:{options}\n{prompt}'
 
     return prompt
+
+def get_answer_extractor(data_name):
+    if 'gsm' in data_name.lower(): 
+        return gsm8k_answer_extractor
+    elif 'mmlu' in data_name.lower():
+        return multi_choice_question_answer_extractor
 
 def get_messages(prompt, tokenizer):
     # 构建对话格式
@@ -154,6 +175,74 @@ def get_messages(prompt, tokenizer):
 
     return text
 
+def multi_choice_question_answer_extractor(solution_str, prompt=""):
+    if '\boxed' in solution_str:
+        solution_str = solution_str.replace('\\boxed', 'boxed')
+    if 'Boxed' in solution_str:
+        solution_str = solution_str.replace('Boxed', 'boxed')
+
+    solution = re.search("(?<=boxed{)[a-zA-Z]", solution_str)
+
+    final_solution = ""
+    if solution is not None:
+        final_solution = solution.group(0)
+    else:
+        if 'answer is:\n\n' in solution_str:
+            # print(solution_str)
+            solution = re.search("(?<=answer is:\n\n)[a-zA-Z]", solution_str)
+            if solution is not None:
+                final_solution = solution.group(0)
+        elif 'answer is: ' in solution_str:
+            solution = re.search("(?<=answer is: )\w", solution_str)
+            if solution is not None:
+                final_solution = solution.group(0)
+        elif 'answer is ' in solution_str:
+            solution = re.search("(?<=answer is )\w", solution_str)
+            if solution is not None:
+                final_solution = solution.group(0)
+        elif 'Answer: ' in solution_str:
+            solution = re.search("(?<=Answer\: )\w", solution_str)
+            if solution is not None:
+                final_solution = solution.group(0)
+        elif 'answer: ' in solution_str:
+            solution = re.search("(?<=answer: )\w", solution_str)
+            if solution is not None:
+                final_solution = solution.group(0)
+        elif 'Answer\n' in solution_str:
+            solution = re.search("(?<=Final Answer\n)[a-zA-Z]", solution_str)
+            if solution is not None:
+                final_solution = solution.group(0)
+        elif 'answer is:\n' in solution_str:
+            solution = re.search("(?<=answer is:\n)[a-zA-Z]", solution_str)
+            if solution is not None:
+                final_solution = solution.group(0)
+        elif 'Final Answer**: ' in solution_str:
+            solution = re.search("(?<=Final Answer\*\*: )\w", solution_str)
+            if solution is not None:
+                final_solution = solution.group(0)
+        elif solution_str in prompt:
+            final_solution = solution_str
+        elif 'which is option ' in solution_str:
+            solution = re.search("(?<=which is option )[a-zA-Z]", solution_str)
+            if solution is not None:
+                final_solution = solution.group(0)
+        elif 'boxed: ' in solution_str:
+            solution = re.search("(?<=boxed: )[a-zA-Z]", solution_str)
+            if solution is not None:
+                final_solution = solution.group(0)
+        elif 'is **' in solution_str:
+            solution = re.search("(?<=is \*\*)[a-zA-Z]", solution_str)
+            if solution is not None:
+                final_solution = solution.group(0)
+        else:
+            solution = re.search("^[a-zA-Z]\.", solution_str)
+            if solution is not None:
+                final_solution = solution.group(0)[0]
+            else:
+                final_solution = ""
+
+    return final_solution
+
 import re
 def gsm8k_answer_extractor(solution_str):
     solution = re.search("(?<=boxed{)-?\d+(?:[.,]\d+)*(?=\})", solution_str)
@@ -166,15 +255,37 @@ def gsm8k_answer_extractor(solution_str):
     return final_solution
 
 from collections import Counter
-def get_label(greedy_answer:str, sample_answers:list[str]):
+
+
+def get_majority_answer(sample_answers):
     answer_counter = Counter(sample_answers)
-
-    if len(answer_counter) == len(sample_answers):
-        return False
-
     majority_answer = Counter(sample_answers).most_common(1)[0][0] 
+    return majority_answer
+
+def is_right_gsm(greedy_answer:str, majority_answer):
 
     return float(greedy_answer) == float(majority_answer)
+
+def is_right_multi_choices_question(pred:str, gt) -> float:
+
+    if pred and gt:
+        gt = gt.strip()
+        pred = pred.strip()
+        while pred[-1] == '.':
+            pred = pred[:-1]
+
+        return gt.lower() == pred.lower()
+        
+    return False
+
+def get_label(greedy_answer:str, sample_answers:list[str], data_name):
+
+    majority_answer = get_majority_answer(sample_answers)
+
+    if 'gsm' in data_name.lower(): 
+        return is_right_gsm(greedy_answer, majority_answer)
+    elif 'mmlu' in data_name.lower():
+        return is_right_multi_choices_question(greedy_answer, majority_answer)
 
 
 def _generate(model, tokenizer, prompt, max_new_tokens=512, num_samples=1, temperature=0.7):
@@ -205,140 +316,108 @@ def _generate(model, tokenizer, prompt, max_new_tokens=512, num_samples=1, tempe
 
     return responses
 
-def get_labels_vllm(model_name, data_name, dataset_path, num_samples=10, temperature=0.7, max_new_tokens=512):
-    """
-    使用 VLLM 框架为数据集生成标签。
-
-    Args:
-        model_name (str): 要加载的模型名称（位于'/mnt/local/wxy/models/'下）。
-        data_name (str): 数据集名称，用于获取 prompt 和设置输出路径。
-        dataset_path (str): 输入数据集的 .jsonl 文件路径。
-        num_samples (int): 每个 prompt 需要采样的响应数量。
-        temperature (float): 采样时的温度。
-        max_new_tokens (int): 生成响应的最大长度。
-    """
-    model_path = f'/mnt/local/wxy/models/{model_name}'
-    
-    # 1. 使用 VLLM 加载模型
-    # tensor_parallel_size 可以根据你的 GPU 数量设置，以实现多卡并行
-    # trust_remote_code=True 对于很多模型是必需的
-    print("Loading VLLM model...")
-    llm = LLM(
-        model=model_path
-        , trust_remote_code=True
-        , tensor_parallel_size=len(os.environ['CUDA_VISIBLE_DEVICES'].split(','))
-        , dtype=torch.float16
-        , gpu_memory_utilization=0.8
-        )
-    print("Model loaded.")
-
-    # 2. 准备所有 prompts
-    prompts = []
-    original_data = []
-    with open(dataset_path, 'r', encoding='utf-8') as f:
-        for line in f:
-            data = json.loads(line.strip())
-            question = data['question']
-            # 组合 prompt，与原逻辑保持一致
-            prompt = question + '\n' + get_prompts(data_name)
-            prompts.append(prompt)
-            original_data.append(data)
-
-    # 3. 定义采样参数
-    # 用于贪心搜索 (temperature=0)
-    greedy_params = SamplingParams(
-        n=1,
-        temperature=0,
-        max_tokens=max_new_tokens,
-    )
-    # 用于多样本采样
-    sample_params = SamplingParams(
-        n=num_samples,
-        temperature=temperature,
-        max_tokens=max_new_tokens,
-        # 如果 temperature=0，VLLM 默认使用贪心搜索。
-        # 如果 temperature > 0，则自动进行采样。
-    )
-
-    # 4. 批量生成响应
-    # 第一次调用：为所有 prompts 生成贪心响应
-    print(f"Generating greedy responses for {len(prompts)} prompts...")
-    greedy_outputs = llm.generate(prompts, greedy_params)
-    print("Greedy generation finished.")
-
-    # 第二次调用：为所有 prompts 生成采样响应
-    print(f"Generating {num_samples} samples for each of the {len(prompts)} prompts...")
-    sample_outputs = llm.generate(prompts, sample_params)
-    print("Sample generation finished.")
-
-    # 5. 处理并保存结果
-    data_responses_output_path = f'./datasets/{data_name}/responses'
-    if not os.path.exists(data_responses_output_path):
-        os.makedirs(data_responses_output_path)
-
-    data_responses_output_file = f'{data_responses_output_path}/responses_vllm.json'
-
-    with open(data_responses_output_file, 'w', encoding='utf-8') as w:
-        for i in range(len(prompts)):
-            # 获取原始数据
-            result_data = original_data[i]
-            
-            # 提取贪心响应
-            greedy_response = greedy_outputs[i].outputs[0].text.strip()
-            
-            # 提取采样响应
-            sample_responses = [output.text.strip() for output in sample_outputs[i].outputs]
-            
-            # 组合最终结果
-            result_data['greedy_response'] = greedy_response
-            result_data['sample_responses'] = sample_responses
-            
-            # 写入文件
-            w.write(json.dumps(result_data, ensure_ascii=False) + '\n')
-            
-    print(f"All responses have been saved to {data_responses_output_file}")
-    return data_responses_output_file
 
 def get_labels(model_name, data_name, dataset_path, num_samples=10, temperature=0.7, max_new_tokens=512):
     model_path = f'/mnt/local/wxy/models/{model_name}'
-    model = AutoModelForCausalLM.from_pretrained(model_path, device_map='auto', torch_dtype=torch.float16)
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    
+    # 使用 vLLM 进行加速
+    print(f"Initializing vLLM with model: {model_path}")
+    # tensor_parallel_size 设置为 GPU 数量
+    llm = LLM(model=model_path, trust_remote_code=True, tensor_parallel_size=torch.cuda.device_count())
+    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
 
-    prompt = get_prompts(data_name) 
     data_responses_output_path = f'./datasets/{data_name}/responses'
     if not os.path.exists(data_responses_output_path):
         os.makedirs(data_responses_output_path)
+
+    answer_extractor = get_answer_extractor(data_name)
 
     data_file_name = dataset_path.split('/')[-1].split('.')[0]
     data_responses_output_file = f'{data_responses_output_path}/responses_{data_file_name}.json'
 
-    with open(dataset_path, 'r') as f, open(data_responses_output_file, 'w') as w:
-        for line in f.readlines():
-            data = json.loads(line.strip())
-            question = data['question']
-            prompt = question + '\n' + get_prompts(data_name)
-            greedy_response = _generate(model=model, tokenizer=tokenizer, prompt=prompt, num_samples=1, temperature=0, max_new_tokens=max_new_tokens)[0]
-            sample_responses = _generate(model=model, tokenizer=tokenizer, prompt=prompt, num_samples=num_samples, temperature=temperature, max_new_tokens=max_new_tokens)
-            greedy_answer = gsm8k_answer_extractor(greedy_response)
-            sample_answers = [gsm8k_answer_extractor(ans) for ans in sample_responses]
+    # 读取所有数据
+    with open(dataset_path, 'r') as f:
+        lines = f.readlines()
+    
+    all_data = [json.loads(line.strip()) for line in lines]
+    prompts = []
+    raw_prompts = []
+    questions = []
+
+    print("Preparing prompts...")
+    for data in tqdm(all_data):
+        question = data['question']
+        raw_prompt = get_prompts(data_name, data)
+        # 应用聊天模板
+        text = get_messages(raw_prompt, tokenizer)
+        
+        prompts.append(text)
+        raw_prompts.append(raw_prompt)
+        questions.append(question)
+
+    # 1. Greedy Generation
+    print("Generating greedy responses...")
+    sampling_params_greedy = SamplingParams(temperature=0, max_tokens=max_new_tokens)
+    outputs_greedy = llm.generate(prompts, sampling_params_greedy)
+
+    # 2. Sampling Generation
+    print(f"Generating sampled responses (n={num_samples})...")
+    sampling_params_sample = SamplingParams(temperature=temperature, top_p=0.95, max_tokens=max_new_tokens, n=num_samples)
+    outputs_sample = llm.generate(prompts, sampling_params_sample)
+
+    print(f"Saving results to {data_responses_output_file}...")
+    with open(data_responses_output_file, 'w') as w:
+        for i in range(len(all_data)):
+            greedy_output = outputs_greedy[i]
+            sample_output = outputs_sample[i]
+            
+            greedy_response = greedy_output.outputs[0].text
+            sample_responses = [o.text for o in sample_output.outputs]
+            
+            greedy_answer = answer_extractor(greedy_response)
+            sample_answers = [answer_extractor(ans) for ans in sample_responses]
 
             new_data = {}
-            new_data['question'] = question
-            new_data['prompt'] = prompt
+            new_data['question'] = questions[i]
+            new_data['prompt'] = raw_prompts[i]
             new_data['greedy_response'] = greedy_response
             new_data['greedy_answer'] = greedy_answer
             new_data['sample_responses'] = sample_responses
             new_data['sample_answers'] = sample_answers
-            new_data['label'] = get_label(greedy_answer, sample_answers)
+            new_data['label'] = get_label(greedy_answer, sample_answers, data_name)
 
             w.write(json.dumps(new_data, ensure_ascii=False)+'\n')
 
+    # 清理显存，防止后续加载 HF 模型 OOM
+    del llm
+    import gc
+    gc.collect()
+    torch.cuda.empty_cache()
+
     return data_responses_output_file
 
-def save_hidden_states(model_name, data_name, dataset_path):
+def save_hidden_states(args):
+    model_name=args.model_name
+    data_name=args.data_name
+    dataset_path=args.dataset_path
+    temperature=args.temperature
+    num_samples=args.num_samples
+    max_new_tokens=args.max_new_tokens
+     
+    # 优先检查是否需要生成标签，避免重复加载模型导致OOM
+    data_responses_output_file = f'/mnt/local2/wxy/hallucination_predict_by_prompt/datasets/{data_name}/responses.json' 
+    if not os.path.exists(data_responses_output_file):
+        print("Responses file not found, generating labels first...")
+        data_responses_output_file = get_labels(
+            model_name=model_name
+            , data_name=data_name
+            , dataset_path=dataset_path
+            , temperature=temperature
+            , num_samples=num_samples
+            , max_new_tokens=max_new_tokens)
     model_path = f'/mnt/local/wxy/models/{model_name}'
 
-    print("正在加载模型和分词器...")
+    print("正在加载模型和分词器 (HF)...")
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
@@ -350,12 +429,6 @@ def save_hidden_states(model_name, data_name, dataset_path):
     all_hidden = []
     all_attention = []
     all_label = []
-
-
-    data_responses_output_file = f'/mnt/local2/wxy/hallucination_predict_by_prompt/datasets/{data_name}/responses.json' 
-    if not os.path.exists(data_responses_output_file):
-        data_responses_output_file = get_labels(model_name, data_name, dataset_path)
-        # data_responses_output_file = get_labels_vllm(model_name, data_name, dataset_path)
 
     print(f'load data from {data_responses_output_file}')
 

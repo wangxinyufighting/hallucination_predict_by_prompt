@@ -1,2 +1,5 @@
 baselines/
 data/__pycache__/
+feature/
+test.ipynb
+datasets/
