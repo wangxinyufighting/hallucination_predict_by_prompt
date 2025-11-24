@@ -118,8 +118,7 @@ def get_and_save_representations(
 
     all_layer_hidden_states = []
     for layer_idx, layer_hidden_state in layer_hidden_states.items():
-        print(layer_hidden_state.shape)
-        all_layer_hidden_states.append(layer_hidden_state[:, -1, :])
+        all_layer_hidden_states.append(layer_hidden_state[-1, :])
     all_layer_hidden_states = np.array(all_layer_hidden_states)  # (Layers, Tokens, Hidden_Size)
     all_layer_hidden_states = np.array(all_layer_hidden_states)
 
@@ -257,9 +256,27 @@ def gsm8k_answer_extractor(solution_str):
 from collections import Counter
 
 
-def get_majority_answer(sample_answers):
+# def get_majority_answer(sample_answers):
+#     answer_counter = Counter(sample_answers)
+#     majority_answer = Counter(sample_answers).most_common(1)[0][0] 
+#     return majority_answer
+
+def get_majority_answer(sample_answers, greedy_answer):
+    if not sample_answers:
+        return None
     answer_counter = Counter(sample_answers)
-    majority_answer = Counter(sample_answers).most_common(1)[0][0] 
+    most_common = answer_counter.most_common(1)
+    
+    if not most_common:
+        return None
+        
+    majority_answer, count = most_common[0]
+    
+    # 如果样本数大于1且最高频次为1，说明所有答案都不一样
+    if len(sample_answers) > 1 and count == 1:
+        if greedy_answer in sample_answers:
+            return greedy_answer
+        
     return majority_answer
 
 def is_right_gsm(greedy_answer:str, majority_answer):
@@ -278,14 +295,20 @@ def is_right_multi_choices_question(pred:str, gt) -> float:
         
     return False
 
-def get_label(greedy_answer:str, sample_answers:list[str], data_name):
-
-    majority_answer = get_majority_answer(sample_answers)
+def get_label(greedy_answer:str, data_name, is_test, sample_answers=None, gt_answer=None):
+    target_answer = None
+    
+    if is_test:
+        target_answer = gt_answer
+    else:
+        target_answer = get_majority_answer(sample_answers, greedy_answer)
+        if target_answer is None:
+            return False
 
     if 'gsm' in data_name.lower(): 
-        return is_right_gsm(greedy_answer, majority_answer)
+        return is_right_gsm(greedy_answer, target_answer)
     elif 'mmlu' in data_name.lower():
-        return is_right_multi_choices_question(greedy_answer, majority_answer)
+        return is_right_multi_choices_question(greedy_answer, target_answer)
 
 
 def _generate(model, tokenizer, prompt, max_new_tokens=512, num_samples=1, temperature=0.7):
@@ -319,7 +342,10 @@ def _generate(model, tokenizer, prompt, max_new_tokens=512, num_samples=1, tempe
 
 def get_labels(model_name, data_name, dataset_path, num_samples=10, temperature=0.7, max_new_tokens=512):
     model_path = f'/mnt/local/wxy/models/{model_name}'
-    
+    is_test = False
+    if 'test' in dataset_path:
+        is_test = True
+        
     # 使用 vLLM 进行加速
     print(f"Initializing vLLM with model: {model_path}")
     # tensor_parallel_size 设置为 GPU 数量
@@ -336,13 +362,19 @@ def get_labels(model_name, data_name, dataset_path, num_samples=10, temperature=
     data_responses_output_file = f'{data_responses_output_path}/responses_{data_file_name}.json'
 
     # 读取所有数据
-    with open(dataset_path, 'r') as f:
-        lines = f.readlines()
-    
-    all_data = [json.loads(line.strip()) for line in lines]
+    if dataset_path.endswith('.parquet'):
+        import pandas as pd
+        df = pd.read_parquet(dataset_path)
+        all_data = df.to_dict('records')
+    else:
+        with open(dataset_path, 'r') as f:
+            lines = f.readlines()
+            all_data = [json.loads(line.strip()) for line in lines]
+            
     prompts = []
     raw_prompts = []
     questions = []
+    gt_answers = []
 
     print("Preparing prompts...")
     for data in tqdm(all_data):
@@ -354,39 +386,49 @@ def get_labels(model_name, data_name, dataset_path, num_samples=10, temperature=
         prompts.append(text)
         raw_prompts.append(raw_prompt)
         questions.append(question)
+        gt_answers.append(data['answer'])
 
     # 1. Greedy Generation
     print("Generating greedy responses...")
-    sampling_params_greedy = SamplingParams(temperature=0, max_tokens=max_new_tokens)
+    sampling_params_greedy = SamplingParams(temperature=0, max_tokens=max_new_tokens, seed=1029)
     outputs_greedy = llm.generate(prompts, sampling_params_greedy)
 
-    # 2. Sampling Generation
-    print(f"Generating sampled responses (n={num_samples})...")
-    sampling_params_sample = SamplingParams(temperature=temperature, top_p=0.95, max_tokens=max_new_tokens, n=num_samples)
-    outputs_sample = llm.generate(prompts, sampling_params_sample)
+    if not is_test:
+        # 2. Sampling Generation
+        print(f"Generating sampled responses (n={num_samples})...")
+        sampling_params_sample = SamplingParams(temperature=temperature, top_p=0.95, max_tokens=max_new_tokens, n=num_samples)
+        outputs_sample = llm.generate(prompts, sampling_params_sample)
 
     print(f"Saving results to {data_responses_output_file}...")
     with open(data_responses_output_file, 'w') as w:
         for i in range(len(all_data)):
+            sample_answers = None
+            gt_answer = None
+            
             greedy_output = outputs_greedy[i]
-            sample_output = outputs_sample[i]
-            
             greedy_response = greedy_output.outputs[0].text
-            sample_responses = [o.text for o in sample_output.outputs]
-            
             greedy_answer = answer_extractor(greedy_response)
-            sample_answers = [answer_extractor(ans) for ans in sample_responses]
+            
+            if greedy_answer != '':
+                new_data = {}
+                new_data['question'] = questions[i]
+                new_data['prompt'] = raw_prompts[i]
+                new_data['greedy_response'] = greedy_response
+                new_data['greedy_answer'] = greedy_answer
+                
+                if is_test:
+                    gt_answer = all_data[i]['answer']
+                    new_data['gt_answer'] = gt_answer
+                else:
+                    sample_output = outputs_sample[i]
+                    sample_responses = [o.text for o in sample_output.outputs]
+                    sample_answers = [answer_extractor(ans) for ans in sample_responses]
+                    new_data['sample_responses'] = sample_responses
+                    new_data['sample_answers'] = sample_answers
+                    
+                new_data['label'] = get_label(greedy_answer, data_name, is_test, sample_answers, gt_answer)
 
-            new_data = {}
-            new_data['question'] = questions[i]
-            new_data['prompt'] = raw_prompts[i]
-            new_data['greedy_response'] = greedy_response
-            new_data['greedy_answer'] = greedy_answer
-            new_data['sample_responses'] = sample_responses
-            new_data['sample_answers'] = sample_answers
-            new_data['label'] = get_label(greedy_answer, sample_answers, data_name)
-
-            w.write(json.dumps(new_data, ensure_ascii=False)+'\n')
+                w.write(json.dumps(new_data, ensure_ascii=False)+'\n')
 
     # 清理显存，防止后续加载 HF 模型 OOM
     del llm
@@ -450,26 +492,120 @@ def save_hidden_states(args):
             all_attention.append(captured_data["all_head_representations"])
             all_label.append(data['label'])
 
-    path = './feature'
+    path = '/mnt/local3/wxy/data/hallucination/feature'
     if not os.path.exists(path):
         os.makedirs(path)
 
     # all_hidden shape: (Num_Examples, Layers, 1, Hidden_Size)]
     # all_attention shape: (Num_Examples, Layers, 1, Heads, Head_Dim)
     # all_label shape: (Num_Examples,)
+    
+    split = 'test' if 'test' in dataset_path else 'train'
+    data_type = dataset_path.split('/')[-1].split('.')[0]
 
-    np.save(f'{path}/{data_name}_{model_name}_layers.npy', all_hidden)
-    np.save(f'{path}/{data_name}_{model_name}_heads.npy', all_attention)
-    np.save(f'{path}/{data_name}_{model_name}_labels.npy', all_label)
+    np.save(f'{path}/{data_name}_{data_type}_{model_name}_layers.npy', all_hidden)
+    np.save(f'{path}/{data_name}_{data_type}_{model_name}_heads.npy', all_attention)
+    np.save(f'{path}/{data_name}_{data_type}_{model_name}_labels.npy', all_label)
 
-    print(f'layer hidden states saved in {path}/{data_name}_{model_name}_layers.npy')
-    print(f'head hidden states saved in {path}/{data_name}_{model_name}_heads.npy')
-    print(f'label saved in {path}/{data_name}_{model_name}_labels.npy')
+    print(f'layer hidden states saved in {path}/{data_name}_{data_type}_{model_name}_layers.npy')
+    print(f'head hidden states saved in {path}/{data_name}_{data_type}_{model_name}_heads.npy')
+    print(f'label saved in {path}/{data_name}_{data_type}_{model_name}_labels.npy')
 
 
-def probe(layer_num, head_num, head_wise_activations_train, labels_train, head_wise_activations_test, labels_test, max_iter=5):
+# def probe(layer_num, head_num, head_wise_activations_train, labels_train, head_wise_activations_test, labels_test, max_iter=100):
+#     m_auc = np.empty([layer_num,head_num], dtype = float) 
+#     m_auroc = np.empty([layer_num,head_num], dtype = float) 
+
+#     d_clf = {}
+#     for layer in tqdm(range(layer_num)):
+#         for head in range(head_num):
+#             X_train = head_wise_activations_train[:, layer, head, :]
+#             Y_train = labels_train
+#             assert X_train.shape[0]==Y_train.shape[0]
+
+#             # Standardize features (对于 MLP 和 LogisticRegression 都很重要)
+#             scaler = StandardScaler()
+#             # X_train = scaler.fit_transform(X_train)
+            
+#             X_test = head_wise_activations_test[:, layer, head, :]
+#             # X_test = scaler.transform(X_test)
+            
+#             Y_test = labels_test
+#             assert X_test.shape[0]==Y_test.shape[0]
+
+#             # 尝试使用 MLPClassifier (多层感知机) 来捕获非线性特征，通常比逻辑回归效果更好
+#             # clf = MLPClassifier(hidden_layer_sizes=(64, 32), max_iter=max_iter, random_state=42).fit(X_train, Y_train)
+            
+#             clf = LogisticRegression(max_iter=max_iter, C=0.01, solver='lbfgs').fit(X_train, Y_train)
+            
+#             # 如果仍想用逻辑回归，请使用 lbfgs 求解器配合标准化数据
+#             # clf = LogisticRegression(max_iter=max_iter, solver='lbfgs').fit(X_train, Y_train)
+
+#             if layer not in d_clf:
+#                 d_clf[layer] = {}
+#             if head not in d_clf[layer]:
+#                 d_clf[layer][head] = clf
+
+#             tempPredicts = clf.predict(X_test)
+#             tempLogits = [i[1] for i in clf.predict_proba(X_test)]
+
+#             precision_list, recall_list, _ = precision_recall_curve(Y_test, tempLogits)
+#             auroc = roc_auc_score(Y_test, tempLogits)
+#             prauc = auc(recall_list, precision_list)
+
+#             m_auc[layer][head] = prauc
+#             m_auroc[layer][head] = auroc
+
+#     return m_auc, m_auroc, d_clf
+
+# def probe(layer_num, head_num, head_wise_activations_train, labels_train, head_wise_activations_test, labels_test, max_iter=1000):
+#     m_auc = np.empty([layer_num,head_num], dtype = float) 
+#     m_auroc = np.empty([layer_num,head_num], dtype = float) 
+
+#     d_clf = {}
+#     for layer in tqdm(range(layer_num)):
+#         for head in range(head_num):
+#             X_train = head_wise_activations_train[:, layer, head, :]
+#             Y_train = labels_train
+#             assert X_train.shape[0]==Y_train.shape[0]
+
+#             # # Standardize features
+#             # scaler = StandardScaler()
+#             # X_train = scaler.fit_transform(X_train)
+
+#             clf = LogisticRegression(max_iter=max_iter).fit(X_train, Y_train) 
+
+#             X_test = head_wise_activations_test[:, layer, head, :]
+#             Y_test = labels_test
+#             assert X_test.shape[0]==Y_test.shape[0]
+
+#             # # Apply the same scaling to test data
+#             # X_test = scaler.transform(X_test)
+
+#             if layer not in d_clf:
+#                 d_clf[layer] = {}
+#             if head not in d_clf[layer]:
+#                 d_clf[layer][head] = clf
+
+#             tempPredicts = clf.predict(X_test)
+#             tempLogits = [i[1] for i in clf.predict_proba(X_test)]
+
+#             precision_list, recall_list, _ = precision_recall_curve(Y_test, tempLogits)
+#             auroc = roc_auc_score(Y_test, tempLogits)
+#             prauc = auc(recall_list, precision_list)
+
+#             m_auc[layer][head] = prauc
+#             m_auroc[layer][head] = auroc
+
+#     return m_auc, m_auroc, d_clf
+
+
+
+def probe(layer_num, head_num, head_wise_activations_train, labels_train, head_wise_activations_test, labels_test, max_iter=1000):
     m_auc = np.empty([layer_num,head_num], dtype = float) 
     m_auroc = np.empty([layer_num,head_num], dtype = float) 
+    m_auc_train = np.empty([layer_num,head_num], dtype = float) 
+    m_auroc_train = np.empty([layer_num,head_num], dtype = float) 
 
     d_clf = {}
     for layer in tqdm(range(layer_num)):
@@ -477,26 +613,41 @@ def probe(layer_num, head_num, head_wise_activations_train, labels_train, head_w
             X_train = head_wise_activations_train[:, layer, head, :]
             Y_train = labels_train
             assert X_train.shape[0]==Y_train.shape[0]
-
-            clf = LogisticRegression(max_iter=max_iter).fit(X_train, Y_train) 
-
+            
             X_test = head_wise_activations_test[:, layer, head, :]
             Y_test = labels_test
             assert X_test.shape[0]==Y_test.shape[0]
 
+            # 保持之前的配置：LogisticRegression + L2正则化(C=0.01)
+            clf = LogisticRegression(max_iter=max_iter, C=1, solver='lbfgs').fit(X_train, Y_train) 
+            scaler = StandardScaler()
+            X_train = scaler.fit_transform(X_train)
+            X_test = scaler.transform(X_test)
+            # clf = MLPClassifier(hidden_layer_sizes=(64, 32), max_iter=max_iter, alpha=0.1, early_stopping=True, random_state=42).fit(X_train, Y_train)
+            # clf = MLPClassifier(hidden_layer_sizes=(64,32), max_iter=max_iter, early_stopping=True, random_state=42).fit(X_train, Y_train)
+            # clf = LogisticRegression(max_iter=max_iter).fit(X_train, Y_train) 
+            
             if layer not in d_clf:
                 d_clf[layer] = {}
             if head not in d_clf[layer]:
                 d_clf[layer][head] = clf
 
-            tempPredicts = clf.predict(X_test)
+            # --- Test Set Evaluation ---
             tempLogits = [i[1] for i in clf.predict_proba(X_test)]
-
             precision_list, recall_list, _ = precision_recall_curve(Y_test, tempLogits)
-            auroc = roc_auc_score(Y_test, tempLogits)
-            prauc = auc(recall_list, precision_list)
+            m_auroc[layer][head] = roc_auc_score(Y_test, tempLogits)
+            m_auc[layer][head] = auc(recall_list, precision_list)
 
-            m_auc[layer][head] = prauc
-            m_auroc[layer][head] = auroc
+            # --- Train Set Evaluation (用于诊断过拟合/欠拟合) ---
+            train_logits = [i[1] for i in clf.predict_proba(X_train)]
+            train_precision, train_recall, _ = precision_recall_curve(Y_train, train_logits)
+            m_auroc_train[layer][head] = roc_auc_score(Y_train, train_logits)
+            m_auc_train[layer][head] = auc(train_recall, train_precision)
+
+    print(f"[Diagnosis] Average Train AUROC: {np.mean(m_auroc_train):.4f}")
+    print(f"[Diagnosis] Average Train AUC: {np.mean(m_auc_train):.4f}")
+    print(f"[Diagnosis] Average Test  AUROC: {np.mean(m_auroc):.4f}")
+    print(f"[Diagnosis] Average Test  AUC: {np.mean(m_auc):.4f}")
+    
 
     return m_auc, m_auroc, d_clf
